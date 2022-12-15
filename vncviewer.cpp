@@ -47,25 +47,6 @@ void ShowPointer();
 void ShowCursor();
 void CreateChildWindow();
 
-DWORD WINAPI control_capture(PVOID pvParam)
-{
-    printf_s("current thredID:%d \n", GetCurrentThreadId());
-    Sleep(2000);
-    ClientControlCaptureImpl* pthis = (ClientControlCaptureImpl*)pvParam;
-    pthis->SetCaptureWindow(hWnd);
-    if (pthis->InstallMouseHook())
-    {
-        printf_s("install mouse hook success \n");
-    }
-    if (pthis->InstallKeyBoardHook())
-    {
-        printf_s("install keyboard hook success \n");
-    }
-
-    printf_s("the thread exit \n");
-    return 0;
-}
-
 DWORD WINAPI capture_cursor(PVOID pvParam)
 {
     printf_s("\ncapture cursor shape started! \n");
@@ -193,18 +174,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     HANDLE th;
     th = NULL;
     int x = 0;
-    th = CreateThread(NULL, 0, control_capture, (LPVOID)pcc, 0, &threadID);
+    th = CreateThread(NULL, 0, capture_cursor_icon, (LPVOID)pcc, 0, &threadID);
     CloseHandle(th);
 
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_VNCVIEWER));
-
-    // print the monitor info
-    printf_s("multiMonitor VituralScreen (%d, %d), CVituralScreen (%d, %d) \n",
-        GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
-        GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
-
-    printf_s("current processID:%d, thredID:%d \n", GetCurrentProcessId(), GetCurrentThreadId());
-    thdID = GetCurrentThreadId();
     
     // 主消息循环:
     MSG msg;
@@ -336,6 +309,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 break;
             case IDM_STOPCAPTURE:
                 printf_s("\n######stop all hooks! \n \n");
+                captureCursor = false;
                 pcc->UnintsallMouseHook();
                 pcc->UninstallKeyBoardHook();
                 break;
@@ -364,6 +338,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_DESTROY:
         PostQuitMessage(0);
         break;
+    case WM_DISPLAYCHANGE:
+        printf_s("screen resolution changed! new size is (%4d, %4d), virtual screen size is (%4d, %4d)\n", LOWORD(lParam), HIWORD(lParam),
+                 GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
     default:
         return DefWindowProc(hWnd, message, wParam, lParam);
     }

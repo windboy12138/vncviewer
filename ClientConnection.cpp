@@ -102,7 +102,6 @@ LRESULT CALLBACK ClientControlCaptureImpl::MouseProc(int nCode, WPARAM wParam, L
 	{
 		return CallNextHookEx(mouse_hook_, nCode, wParam, lParam);
 	}
-	printf_s("current processID:%d, thredID:%d \n", GetCurrentProcessId(), GetCurrentThreadId());
 
 	return control_capture_self_->ProcessPointerEventMsg(nCode, wParam, lParam);
 }
