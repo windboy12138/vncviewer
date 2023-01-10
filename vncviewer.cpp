@@ -3,6 +3,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "framework.h"
 #include "ClientConnection.h"
+#include "common_utils.h"
 #include "vncviewer.h"
 #include <iostream>
 #include <queue>
@@ -39,6 +40,7 @@ std::queue<HCURSOR> hcursorQ;
 ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK    DeviceProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK    WndChildProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 
@@ -83,9 +85,44 @@ DWORD WINAPI capture_cursor_icon(PVOID pvParam)
 {
     Sleep(1000);
     printf_s("\ncapture cursor shape icon started! \n");
+    int sample_rate = 50;
+    int64_t last_time = 0;
+    int64_t per_sample_duration = (int64_t)(1000000.0 / (double)sample_rate + 0.5);
+    int last_sample_rate = sample_rate;
+
+    HANDLE timer_handle = CreateWaitableTimer(NULL, FALSE, NULL);
+    if (NULL == timer_handle)
+    {
+        printf_s("timer_handle create failed! \n");
+        return -1;
+    }
     
+    int64_t start = TimeMilliseconds();
+    int cnt = 0;
     while (captureCursor)
     {
+        if (last_sample_rate != sample_rate)
+        {
+            per_sample_duration = (int64_t)(1000000.0 / (double)sample_rate + 0.5);
+            last_sample_rate = sample_rate;
+        }
+
+        int64_t cur_time = TimeMicroseconds();
+        int64_t last_spend_time = cur_time - last_time;
+        
+        
+        if (last_spend_time < per_sample_duration)
+        {
+            int64_t cur_time = TimeMicroseconds();
+            LARGE_INTEGER liDueTime;
+            liDueTime.QuadPart = -(per_sample_duration - last_spend_time) * 10;
+            SetWaitableTimer(timer_handle, &liDueTime, 0, NULL, NULL, 0);
+            if (WaitForSingleObject(timer_handle, INFINITE) != WAIT_OBJECT_0)
+            {
+                //break;
+            }
+        }
+        last_time = cur_time;
         CURSORINFO ci = { 0 };
         ci.cbSize = sizeof(CURSORINFO);
         GetCursorInfo(&ci);
@@ -99,19 +136,14 @@ DWORD WINAPI capture_cursor_icon(PVOID pvParam)
         HICON hIcon = CopyIcon(ci.hCursor);
         if (!hIcon)
         {
-            printf_s("copyIcon failed!\n");
+            printf_s("copyIcon failed, error code:%d!\n", GetLastError());
             continue;
         }
-
-        // bmp = IconToBitmap(hIcon);
-        // SendMessage(hWndChild, WM_PAINT, NULL, NULL);
-        // cursorToBitmap(ci);
 
         uint8_t* maskBits = NULL;
         uint8_t* colorBits = NULL;
         HBITMAP cursor_bmp = NULL;
         int res = captureCursorIcon(hIcon, maskBits, colorBits, bmp);
-        SendMessage(hWndChild, WM_PAINT, NULL, NULL);
 
         if (maskBits != NULL)
         {
@@ -124,12 +156,210 @@ DWORD WINAPI capture_cursor_icon(PVOID pvParam)
         }
 
         DestroyIcon(hIcon);
-        Sleep(10);
+        cnt++;
+        if (cnt == sample_rate)
+        {
+            printf_s("\ncapture %d times cursor shape, duration:%d ms\n", sample_rate, TimeMilliseconds() - start);
+            start = TimeMilliseconds();
+            cnt = 0;
+        }
     }
 
     printf_s("\ncapture cursor shape icon stoped! \n");
 
     return 0;
+}
+
+DWORD WINAPI CaptureCursor(PVOID pvParam)
+{
+    int sample_rate = 50;
+    int64_t last_time = 0;
+    int64_t per_sample_duration = (int64_t)(1000000.0 / (double)sample_rate + 0.5);
+    int last_sample_rate = sample_rate;
+
+    HANDLE timer_handle = CreateWaitableTimer(NULL, FALSE, NULL);
+    if (NULL == timer_handle)
+    {
+        printf_s("timer_handle create failed! \n");
+        return -1;
+    }
+
+    while (true)
+    {
+        if (last_sample_rate != sample_rate)
+        {
+            per_sample_duration = (int64_t)(1000000.0 / (double)sample_rate + 0.5);
+            last_sample_rate = sample_rate;
+        }
+
+        int64_t cur_time = TimeMicroseconds();
+        int64_t last_spend_time = cur_time - last_time;
+
+
+        if (last_spend_time < per_sample_duration)
+        {
+            LARGE_INTEGER liDueTime;
+            liDueTime.QuadPart = -(per_sample_duration - last_spend_time) * 10;
+            SetWaitableTimer(timer_handle, &liDueTime, 0, NULL, NULL, 0);
+            if (WaitForSingleObject(timer_handle, INFINITE) != WAIT_OBJECT_0)
+            {
+                //break;
+            }
+        }
+
+        last_time = cur_time;
+
+        CURSORINFO ci = { 0 };
+        ci.cbSize = sizeof(CURSORINFO);
+        GetCursorInfo(&ci);
+
+        if (!(ci.flags & CURSOR_SHOWING))
+        {
+            printf_s("cursor not showed!\n");
+            continue;
+        }
+
+        HICON hIcon = CopyIcon(ci.hCursor);
+        if (!hIcon)
+        {
+            printf_s("CopyIcon failed, error code:%d!\n", GetLastError());
+            continue;
+        }
+
+        uint8_t* maskBits = NULL;
+        uint8_t* colorBits = NULL;
+        HBITMAP cursor_bmp = NULL;
+        int res = captureCursorIcon(hIcon, maskBits, colorBits, bmp);
+
+        if (maskBits != NULL)
+        {
+            delete[] maskBits;
+        }
+
+        if (colorBits != NULL)
+        {
+            delete[] colorBits;
+        }
+
+        DestroyIcon(hIcon);
+    }
+
+    return 0;
+}
+
+bool CreateCaptureCursorThread()
+{
+    // 创建一个线程监控鼠标的形状变化，并把cursor handle存入队列中
+    DWORD threadID;
+    HANDLE th;
+    th = NULL;
+    int x = 0;
+    th = CreateThread(NULL, 0, capture_cursor_icon, (LPVOID)pcc, 0, &threadID);
+    CloseHandle(th);
+    return true;
+}
+
+LRESULT CALLBACK DeviceProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_DISPLAYCHANGE:
+        printf_s("Device display changed! \n");
+        break;
+    case WM_CLIPBOARDUPDATE:
+    {
+        printf_s("Clipboard data updated! \n");
+        HANDLE clip;
+        std::string clip_text = "";
+        
+        
+        if (!IsClipboardFormatAvailable(CF_TEXT))
+        {
+            printf_s("Not text data\n");
+            break;
+        }
+
+        if (!OpenClipboard(NULL))
+        {
+            printf_s("Can't open clipboard\n");
+            break;
+        }
+        clip = GetClipboardData(CF_TEXT);
+        clip_text = (char*)clip;
+        printf_s("Clipboard data: %s! \n", (char*)clip);
+
+        char text[] = "SetClipboardData";
+        SetClipboardData(CF_TEXT, (HANDLE)text);
+
+        CloseClipboard();
+        break;
+    }
+    default:
+        return DefWindowProc(hWnd, message, wParam, lParam);
+    }
+    return 0;
+}
+
+DWORD WINAPI DeviceListener(PVOID pvParam)
+{
+    WNDCLASSEXW window_class = { 0 };
+    window_class.cbSize = sizeof(window_class);
+    window_class.style = CS_HREDRAW | CS_VREDRAW;
+    window_class.lpfnWndProc = DeviceProc;
+    window_class.cbClsExtra = 0;
+    window_class.cbWndExtra = 0;
+    window_class.hInstance = hInst;
+    window_class.hIcon = NULL;
+    window_class.hCursor = NULL;
+    window_class.hbrBackground = NULL;
+    window_class.lpszMenuName = NULL;
+    window_class.lpszClassName = L"DeviceListener";
+    window_class.hIconSm = NULL;
+    auto res = RegisterClassExW(&window_class);
+
+    HWND message_wnd_ = CreateWindowExW(
+        WS_EX_LAYERED, L"DeviceListener", L"DeviceListener", WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        0, NULL, hInst, NULL);
+
+    if (!message_wnd_)
+    {
+        DWORD err = GetLastError();
+        printf_s("error code:%d! \n", err);
+        return 0;
+    }
+
+    ShowWindow(message_wnd_, SW_HIDE);
+    if (!AddClipboardFormatListener(message_wnd_))
+    {
+        printf_s("AddClipboardFormatListener failed! \n");
+        return 0;
+    }
+    // while (1) {}
+
+    MSG msg;
+    while (GetMessage(&msg, nullptr, 0, 0))
+    {
+        if (1)
+        {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+    }
+
+    return 0;
+}
+
+bool CreateDeviceListenerThread()
+{
+    // 创建一个线程监控
+    DWORD threadID;
+    HANDLE th;
+    th = NULL;
+    int x = 0;
+    th = CreateThread(NULL, 0, DeviceListener, (LPVOID)pcc, 0, &threadID);
+    CloseHandle(th);
+    return true;
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -158,7 +388,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     // 初始化全局字符串
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
     LoadStringW(hInstance, IDC_VNCVIEWER, szWindowClass, MAX_LOADSTRING);
-    MyRegisterClass(hInstance);
+    auto res = MyRegisterClass(hInstance);
     
 
     // 执行应用程序初始化:
@@ -169,13 +399,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     pcc = new ClientControlCaptureImpl();
 
-    // 创建一个线程监控鼠标的形状变化，并把cursor handle存入队列中
-    DWORD threadID;
-    HANDLE th;
-    th = NULL;
-    int x = 0;
-    th = CreateThread(NULL, 0, capture_cursor_icon, (LPVOID)pcc, 0, &threadID);
-    CloseHandle(th);
+    // CreateDeviceListenerThread();
+    CreateCaptureCursorThread();
 
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_VNCVIEWER));
     
@@ -258,6 +483,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    ShowWindow(hWnd, nCmdShow);
    ShowWindow(hWndChild, nCmdShow);
    MoveWindow(hWndChild, 30, 100, 540, 960, true);
+   // SetWindowPos(hWndChild, NULL, 10, 10, 540, 1300, 0);
    UpdateWindow(hWnd);
 
    return TRUE;
@@ -312,6 +538,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 captureCursor = false;
                 pcc->UnintsallMouseHook();
                 pcc->UninstallKeyBoardHook();
+                break;
+            case IDM_STARTCURSOR:
+                CreateCaptureCursorThread();
                 break;
             case IDM_SHOWKEYBOARD:
                 ShowKeyboard();
@@ -377,6 +606,9 @@ LRESULT CALLBACK WndChildProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPa
         ftn.AlphaFormat = AC_SRC_ALPHA;
         AlphaBlend(temp, 50, 50, 32, 32, bmp1, 0, 0, 32, 32, ftn);
         // BitBlt(temp, 50, 50, 32, 32, bmp1, 0, 0, SRCCOPY);
+        ReleaseDC(hWnd, temp);
+        DeleteDC(bmp1);
+
         EndPaint(hWnd, &ps);
     }
     break;
@@ -471,7 +703,7 @@ void ShowCursor()
 void CreateChildWindow()
 {
     HCURSOR h1;
-    h1 = CreateCursor(NULL, 0, 0, 32, 32, and_mask_bits, xor_mask_bits);
+    //h1 = CreateCursor(NULL, 0, 0, 32, 32, and_mask_bits, xor_mask_bits);
     h1 = LoadCursor(NULL, MAKEINTRESOURCE(IDC_ARROW));
     // h1 = LoadCursorFromFile(_T("cursor1.cur"));
 

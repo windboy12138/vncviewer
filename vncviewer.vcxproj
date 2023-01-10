@@ -140,6 +140,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="bitmap.h" />
+    <ClInclude Include="common_utils.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="targetver.h" />
@@ -153,6 +154,7 @@
     <ClInclude Include="messageProto.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="common_utils.cc" />
     <ClCompile Include="vncviewer.cpp" />
     <ClCompile Include="ClientConnection.cpp" />
     <ClCompile Include="KeyMap.cpp" />

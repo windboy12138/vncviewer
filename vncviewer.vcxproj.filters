@@ -57,6 +57,9 @@
     <ClInclude Include="bitmap.h">
       <Filter>源文件</Filter>
     </ClInclude>
+    <ClInclude Include="common_utils.h">
+      <Filter>源文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="vncviewer.cpp">
@@ -73,6 +76,9 @@
     </ClCompile>
     <ClCompile Include="pointerProc.cpp">
       <Filter>源文件\ServerSidePointer</Filter>
+    </ClCompile>
+    <ClCompile Include="common_utils.cc">
+      <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
