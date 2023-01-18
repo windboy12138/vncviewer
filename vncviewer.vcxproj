@@ -140,6 +140,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="bitmap.h" />
+    <ClInclude Include="clipboard.h" />
     <ClInclude Include="common_utils.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Resource.h" />
@@ -152,6 +153,7 @@
     <ClInclude Include="vncKeymap.h" />
     <ClInclude Include="pointerProc.h" />
     <ClInclude Include="messageProto.h" />
+    <ClInclude Include="work_thread.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="common_utils.cc" />

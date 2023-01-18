@@ -3,11 +3,13 @@
 #include <dwmapi.h>
 #include <thread>
 #include "common_utils.h"
+#include "work_thread.h"
 extern HWND hWndChild;
 
 void InitMaskBitMap(int width, int height, bool top2bottom, int bit_count, BITMAPINFO* bmpinfo);
 void InitColorBitMap(int width, int height, bool top2bottom, int bit_count, BITMAPINFO& bmi);
-void print_mask_bitmap(uint8_t* mask_bits);
+void PrintMaskBitmap(uint8_t* mask_bits);
+void PrintColorBitmap(uint8_t* color_bits);
 
 void InitBitMapInfoHeader(int width, int height, bool top2bottom, int bit_count, BITMAPINFOHEADER* bih)
 {
@@ -316,218 +318,272 @@ void cursorToBitmap(CURSORINFO &ci)
     DeleteObject(win_bitmap);
 }
 
-int captureCursorIcon(HICON &hIcon, uint8_t* &mask_bits, uint8_t* &color_bits, HBITMAP &cursor_bmp)
+int CaptureCursorBitmap(HCURSOR hCursor, uint8_t* &mask_bits, uint8_t* &color_bits)
 {
+    HICON hIcon = CopyIcon(hCursor);
     ICONINFO info = { 0 };
-    if (!GetIconInfo(hIcon, &info))
+    bool success = true;
+    INT nWidth = 0;
+    INT nHeight = 0;
+
+    do
     {
-        DestroyIcon(hIcon);
-        return -1;
-    }
-
-    if (info.hbmMask == NULL)
-    {
-        return -1;
-    }
-
-    BITMAP bm = { 0 };
-    GetObject(info.hbmMask, sizeof(bm), &bm);
-    INT nWidth = bm.bmWidth;
-    INT nHeight = bm.bmHeight;
-
-    if (nHeight < 0 || nHeight % 2 != 0)
-    {
-        return -1;
-    }
-
-    int ncolors = 1 << bm.bmBitsPixel;
-    int bmpinfo_size = sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * ncolors;
-    std::vector<uint8_t> buf(bmpinfo_size);
-    BITMAPINFO* bmpinfo = (BITMAPINFO*)buf.data();
-    InitMaskBitMap(nWidth, nHeight, true, bm.bmBitsPixel, bmpinfo);
-    
-    INT nPixelCount = nWidth * 32;
-
-    if (nHeight == 32)
-    {
-        // 彩色光标处理
-        // Capture AND mask bmp data
-        HDC mask_dc = CreateCompatibleDC(NULL);
-        bool generate_mask = true;        
-
-        do
+        if (!hIcon)
         {
-            mask_bits = new uint8_t[nPixelCount / 8];
-            if (mask_bits == nullptr)
-            {
-                // request memory failed
-                break;
-            }
-            memset(mask_bits, 0, nPixelCount / 8);
+            printf_s("copyIcon failed, error code:%d!\n", GetLastError());
+            success = false;
+            break;
+        }
 
-            if (!GetDIBits(mask_dc, info.hbmMask, 0, 32, mask_bits, bmpinfo, DIB_RGB_COLORS))
-            {
-                // failed
-                break;
-            }
+        if (!GetIconInfo(hIcon, &info))
+        {
+            printf_s("GetIconInfo failed, error code:%d!\n", GetLastError());
+            success = false;
+            break;
+        }
 
-            // If AND mask is standard mask bitmap, there is no need to generate mask
-            for (int i = 0; i < nPixelCount / 8; i++)
+        if (info.hbmMask == NULL)
+        {
+            printf_s("hbmMask is empty!\n");
+            success = false;
+            break;
+        }
+
+        BITMAP bm = { 0 };
+        GetObject(info.hbmMask, sizeof(bm), &bm);
+        nWidth = bm.bmWidth;
+        nHeight = bm.bmHeight;
+
+        if (nHeight < 0 || nHeight % 2 != 0)
+        {
+            break;
+        }
+
+        int ncolors = 1 << bm.bmBitsPixel;
+        int bmpinfo_size = sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * ncolors;
+        std::vector<uint8_t> buf(bmpinfo_size);
+        BITMAPINFO* bmpinfo = (BITMAPINFO*)buf.data();
+        InitMaskBitMap(nWidth, nHeight, true, bm.bmBitsPixel, bmpinfo);
+
+        INT nPixelCount = nWidth * 32;
+
+        if (nHeight == 32)
+        {
+            // 彩色光标处理
+            // Capture AND mask bmp data
+            HDC mask_dc = CreateCompatibleDC(NULL);
+            bool generate_mask = true;
+
+            do
             {
-                if (mask_bits[i] == 0)
+                mask_bits = new uint8_t[nPixelCount / 8];
+                if (mask_bits == nullptr)
                 {
-                    continue;
-                }
-                else
-                {
-                    generate_mask = false;
+                    // request memory failed
                     break;
                 }
-            }
+                memset(mask_bits, 0, nPixelCount / 8);
 
-        } while (0);
-
-        print_mask_bitmap(mask_bits);
-        printf_s("generate mask is:%d\n", generate_mask);
-        Sleep(1000);
-        
-        DeleteDC(mask_dc);
-        
-        ///////////////////////////
-        //Capture Color bmp data
-        HDC color_dc = CreateCompatibleDC(NULL);
-        BITMAPINFO bmi = { 0 };
-        InitColorBitMap(nWidth, nHeight, true, 32, bmi);
-
-        do
-        {
-            color_bits = new(std::nothrow) uint8_t[bmi.bmiHeader.biSizeImage];
-            if (color_bits == nullptr)
-            {
-                // request memory failed
-                break;
-            }
-            memset(color_bits, 0, bmi.bmiHeader.biSizeImage);
-
-            if (!GetDIBits(color_dc, info.hbmColor, 0, 32, color_bits, &bmi, DIB_RGB_COLORS))
-            {
-                // failed
-                break;
-            }
-
-            if (generate_mask)
-            {
-                INT byte_idx = 0;
-                INT bit_idx = 0;
-                for (INT i = 0; i < nPixelCount; i++)
+                if (!GetDIBits(mask_dc, info.hbmMask, 0, 32, mask_bits, bmpinfo, DIB_RGB_COLORS))
                 {
-                    // 在高度设为负值后，bmp位图正向显示，位图数据也变为了RGBA的顺序，alpha通道在最后一个字节
-                    if (color_bits[i * 4 + 3] == 0)
+                    // failed
+                    break;
+                }
+
+                // If AND mask is standard mask bitmap, there is no need to generate mask
+                for (int i = 0; i < nPixelCount / 8; i++)
+                {
+                    if (mask_bits[i] == 0)
                     {
-                        byte_idx = i / 8;
-                        bit_idx = i % 8;
-                        mask_bits[byte_idx] |= (0x80 >> bit_idx);
+                        continue;
+                    }
+                    else
+                    {
+                        generate_mask = false;
+                        break;
                     }
                 }
-            }
-        } while (0);
 
-        DeleteDC(color_dc);
-    }
-    else if (nHeight == 64)
-    {
-        // 黑白光标处理
-        // Capture AND mask bmp data
-        HDC mask_dc = CreateCompatibleDC(NULL);
+            } while (0);
 
-        do
+            PrintMaskBitmap(mask_bits);
+            printf_s("cursor handle:%d\n", hCursor);
+            printf_s("generate mask is:%d\n", generate_mask);
+
+
+            DeleteDC(mask_dc);
+
+            ///////////////////////////
+            //Capture Color bmp data
+            HDC color_dc = CreateCompatibleDC(NULL);
+            BITMAPINFO bmi = { 0 };
+            InitColorBitMap(nWidth, nHeight, true, 32, bmi);
+
+            do
+            {
+                color_bits = new(std::nothrow) uint8_t[bmi.bmiHeader.biSizeImage];
+                if (color_bits == nullptr)
+                {
+                    // request memory failed
+                    break;
+                }
+                memset(color_bits, 0, bmi.bmiHeader.biSizeImage);
+
+                if (!GetDIBits(color_dc, info.hbmColor, 0, 32, color_bits, &bmi, DIB_RGB_COLORS))
+                {
+                    // failed
+                    break;
+                }
+                PrintColorBitmap(color_bits);
+
+                if (generate_mask)
+                {
+                    INT byte_idx = 0;
+                    INT bit_idx = 0;
+                    for (INT i = 0; i < nPixelCount; i++)
+                    {
+                        // 在高度设为负值后，bmp位图正向显示，位图数据也变为了RGBA的顺序，alpha通道在最后一个字节
+                        if (color_bits[i * 4 + 3] == 0)
+                        {
+                            byte_idx = i / 8;
+                            bit_idx = i % 8;
+                            mask_bits[byte_idx] |= (0x80 >> bit_idx);
+                        }
+                    }
+                }
+            } while (0);
+
+            Sleep(1000);
+            DeleteDC(color_dc);
+        }
+        else if (nHeight == 64)
         {
-            mask_bits = new uint8_t[nPixelCount / 8];
-            if (mask_bits == nullptr)
+            // 黑白光标处理
+            // Capture AND mask bmp data
+            HDC mask_dc = CreateCompatibleDC(NULL);
+
+            do
             {
-                // failed
-                break;
-            }
-            memset(mask_bits, 0, nPixelCount / 8);
+                mask_bits = new uint8_t[nPixelCount / 8];
+                if (mask_bits == nullptr)
+                {
+                    // failed
+                    break;
+                }
+                memset(mask_bits, 0, nPixelCount / 8);
 
-            // AND mask 位于下半部分
-            if (!GetDIBits(mask_dc, info.hbmMask, 32, 64, mask_bits, bmpinfo, DIB_RGB_COLORS))
+                // AND mask 位于下半部分
+                if (!GetDIBits(mask_dc, info.hbmMask, 32, 64, mask_bits, bmpinfo, DIB_RGB_COLORS))
+                {
+                    // failed
+                    break;
+                }
+            } while (0);
+
+            DeleteDC(mask_dc);
+
+
+            ///////////////////////////
+            //Capture XOR mask bmp data
+            HDC color_dc = CreateCompatibleDC(NULL);
+            do
             {
-                // failed
-                break;
-            }
-        } while (0);
+                color_bits = new uint8_t[nPixelCount / 8];
+                if (color_bits == nullptr)
+                {
+                    break;
+                }
+                memset(color_bits, 0, nPixelCount / 8);
 
-        DeleteDC(mask_dc);
+                // XOR mask 位于上半部分
+                if (!GetDIBits(color_dc, info.hbmMask, 0, 32, color_bits, bmpinfo, DIB_RGB_COLORS))
+                {
+                    break;
+                }
+            } while (0);
 
+            DeleteDC(color_dc);
 
-        ///////////////////////////
-        //Capture XOR mask bmp data
+            PrintMaskBitmap(mask_bits);
+            PrintMaskBitmap(color_bits);
+        }
+        else
+        {
+            // not support format
+            break;
+        }
+    } while (0);
+    
+    if (success)
+    {
+        HCURSOR h1 = NULL;
+        HBITMAP mask_bmp;
+        HBITMAP color_bmp;
+        if (nHeight == 64)
+        {
+            /*mask_bmp = CreateBitmap(nWidth, 32, 1, 1, mask_bits);
+            color_bmp = CreateBitmap(nWidth, 32, 1, 1, color_bits);
+            h1 = CreateCursor(NULL, info.xHotspot, info.yHotspot, 32, 32, mask_bits, color_bits);*/
+
+            mask_bmp = CreateBitmap(nWidth, 32, 1, 1, mask_bits_global);
+            color_bmp = CreateBitmap(nWidth, 32, 1, 32, color_bits_global);
+            DeleteObject(info.hbmMask);
+            DeleteObject(info.hbmColor);
+            info.hbmMask = mask_bmp;
+            info.hbmColor = color_bmp;
+            h1 = ::CreateIconIndirect(&info);
+        }
+        else
+        {
+            mask_bmp = CreateBitmap(nWidth, 32, 1, 1, mask_bits);
+            color_bmp = CreateBitmap(nWidth, 32, 1, 32, color_bits);
+            DeleteObject(info.hbmMask);
+            DeleteObject(info.hbmColor);
+            info.hbmMask = mask_bmp;
+            info.hbmColor = color_bmp;
+            h1 = ::CreateIconIndirect(&info);
+        }
+
+        HDC wnd = GetWindowDC(hWndChild);
         HDC color_dc = CreateCompatibleDC(NULL);
-        do
-        {
-            color_bits = new uint8_t[nPixelCount / 8];
-            if (color_bits == nullptr)
-            {
-                break;
-            }
-            memset(color_bits, 0, nPixelCount / 8);
-
-            // XOR mask 位于上半部分
-            if (!GetDIBits(color_dc, info.hbmMask, 0, 32, color_bits, bmpinfo, DIB_RGB_COLORS))
-            {
-                break;
-            }
-        } while (0);
+        SelectObject(color_dc, color_bmp);
+        HDC mask_dc = CreateCompatibleDC(NULL);
+        SelectObject(mask_dc, mask_bmp);
+        BitBlt(wnd, 100, 100, 32, 32, NULL, 0, 0, WHITENESS);
+        /*BitBlt(wnd, 100, 100, 32, 32, mask_dc, 0, 0, SRCAND);
+        BitBlt(wnd, 100, 100, 32, 32, color_dc, 0, 0, SRCINVERT);*/
+        BLENDFUNCTION ftn = { 0 };
+        ftn.BlendOp = AC_SRC_OVER;
+        ftn.SourceConstantAlpha = 255;
+        ftn.AlphaFormat = AC_SRC_ALPHA;
+        AlphaBlend(wnd, 100, 100, 32, 32, color_dc, 0, 0, 32, 32, ftn);
 
         DeleteDC(color_dc);
-    }
-    else 
-    {
-        // not support format
-        return -1;
+        DeleteDC(mask_dc);
+        ReleaseDC(hWndChild, wnd);
+
+        if (h1 != NULL)
+        {
+            SetClassLongPtr(hWndChild, GCLP_HCURSOR, (LONG_PTR)(h1));
+            PostMessage(hWndChild, WM_SETCURSOR, (UINT)(hWndChild), 33554433);
+            DestroyCursor(h1);
+        }
     }
 
-    HCURSOR h1 = NULL;
-    HBITMAP mask_bmp = CreateBitmap(nWidth, 32, 1, 1, mask_bits);
-    HBITMAP color_bmp;
-    if (nHeight == 64)
+    if (hIcon)
     {
-        color_bmp = CreateBitmap(nWidth, 32, 1, 1, color_bits);
-        h1 = CreateCursor(NULL, info.xHotspot, info.yHotspot, 32, 32, mask_bits, color_bits);
+        DestroyIcon(hIcon);
     }
-    else
+
+    if (info.hbmMask)
     {
-        color_bmp = CreateBitmap(nWidth, 32, 1, 32, color_bits);
         DeleteObject(info.hbmMask);
-        DeleteObject(info.hbmColor);
-        info.hbmMask = mask_bmp;
-        info.hbmColor = color_bmp;
-        h1 = ::CreateIconIndirect(&info);
     }
 
-    HDC wnd = GetWindowDC(hWndChild);
-    HDC color_dc = CreateCompatibleDC(NULL);
-    SelectObject(color_dc, color_bmp);
-    HDC mask_dc = CreateCompatibleDC(NULL);
-    SelectObject(mask_dc, mask_bmp);
-    BitBlt(wnd, 100, 100, 32, 32, NULL, 0, 0, WHITENESS);
-    BitBlt(wnd, 100, 100, 32, 32, mask_dc, 0, 0, SRCAND);
-    BitBlt(wnd, 100, 100, 32, 32, color_dc, 0, 0, SRCINVERT);
-    // MaskBlt(wnd, 100, 100, 32, 32, color_dc, 0, 0, mask_bmp, 0, 0, 0xccaa0000);
-    DeleteDC(color_dc);
-    DeleteDC(mask_dc);
-    ReleaseDC(hWndChild, wnd);
-    
-    if (h1 != NULL)
+    if (info.hbmColor)
     {
-        SetClassLongPtr(hWndChild, GCLP_HCURSOR, (LONG_PTR)(h1));
-        PostMessage(hWndChild, WM_SETCURSOR, (UINT)(hWndChild), 33554433);
-        DestroyCursor(h1);
+        DeleteObject(info.hbmColor);
     }
-    
-    DeleteObject(info.hbmMask);
-    DeleteObject(info.hbmColor);
 
     return 0;
 }
@@ -555,7 +611,7 @@ void InitColorBitMap(int width, int height, bool top2bottom, int bit_count, BITM
     memset(bmi.bmiColors, 0, sizeof(RGBQUAD));
 }
 
-void print_mask_bitmap(uint8_t *mask_bits)
+void PrintMaskBitmap(uint8_t *mask_bits)
 {
     printf_s("bitmap mask datas \n");
     for (int i = 0; i < 32 * 32 / 8; i++)
@@ -574,28 +630,109 @@ void print_mask_bitmap(uint8_t *mask_bits)
     printf_s("\n");
 }
 
-void print_bitmap()
+void PrintColorBitmap(uint8_t* color_bits)
 {
-    int nPixelCount = 32 * 32;
-    uint8_t *mask_bits = new uint8_t[nPixelCount / 8];
-    
-
-    uint8_t* colorBits = new uint8_t[nPixelCount / 8];
-    printf_s("\nXOR mask");
-    for (int i = 0; i < nPixelCount / 8; i++)
+    printf_s("\ncolor mask data\n");
+    for (int i = 0; i < 32 * 32; i++)
     {
-        if (i % 4 == 0) {
+        if (i % 32 == 0)
+        {
             printf_s("\n");
         }
-        uint8_t tmp = colorBits[i];
-        for (int j = 0; j < 8; j++)
+        for (int j = 0; j < 4; j++)
         {
-            bool res = tmp & 0x80;
-            tmp = tmp << 1;
-            printf_s("%d", res);
+            uint8_t tmp = color_bits[i * 4 + j];
+            if (tmp == 0)
+            {
+                printf_s("00");
+            }
+            else
+            {
+                printf_s("%02x", tmp);
+            }
         }
+        printf_s("\t");
     }
     printf_s("\n");
 }
 
 
+//uint8_t mask_bits_global[] =
+//{
+//    0xff, 0xff, 0xff, 0xff, 0xfc, 0x01, 0xff, 0xff, 0xfc, 0x01, 0xff, 0xff, 0xfc, 0x01, 0xff, 0xff,
+//    0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff,
+//    0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff,
+//    0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff,
+//    0xfc, 0x01, 0xff, 0xff, 0xfc, 0x01, 0xff, 0xff, 0xfc, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+//    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+//    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+//    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+//};
+//
+//uint32_t color_bits_global[] =
+//{
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0xffffffff, 0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x000000ff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x000000ff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0xffffffff, 0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
+//};
