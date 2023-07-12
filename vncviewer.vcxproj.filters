@@ -66,6 +66,9 @@
     <ClInclude Include="work_thread.h">
       <Filter>源文件</Filter>
     </ClInclude>
+    <ClInclude Include="cmdline.h">
+      <Filter>源文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="vncviewer.cpp">

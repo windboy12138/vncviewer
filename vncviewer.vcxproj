@@ -141,6 +141,7 @@
   <ItemGroup>
     <ClInclude Include="bitmap.h" />
     <ClInclude Include="clipboard.h" />
+    <ClInclude Include="cmdline.h" />
     <ClInclude Include="common_utils.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Resource.h" />

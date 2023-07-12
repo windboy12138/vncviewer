@@ -1,7 +1,9 @@
 ﻿// vncviewer.cpp : 定义应用程序的入口点。
 //
 #define _CRT_SECURE_NO_WARNINGS
+#define CONSOLE_OUTPUT
 #include "framework.h"
+#include "cmdline.h"
 #include "ClientConnection.h"
 #include "clipboard.h"
 #include "common_utils.h"
@@ -282,21 +284,49 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
 
+    // the first argv parameter is excutable path
+    // but lpCmdLine only contains parameters, so should set a fake parameter first
+    std::wstring str = lpCmdLine;
+    std::string args = std::string(str.begin(), str.end());
+    cmdline::parser a;
+    //a.add<std::string>("host", 'h', "host name", true, "");
+    //a.add<int>("port", 'p', "port number", false, 80, cmdline::range(1, 65535));
+    //a.add<std::string>("type", 't', "protocol type", false, "http", cmdline::oneof<std::string>("http", "https", "ssh", "ftp"));
+    //a.add("gzip", '\0', "gzip when transfer");
+    // --console will be treat as true
+    a.add("console", '\0', "enable console");
+    
+    a.parse_check(args);
+
+    bool enable_console = false;
+    if (a.exist("console"))
+    {
+        enable_console = true;
+    }
+
+    //std::cout << a.get<std::string>("type") << "://"
+    //    << a.get<std::string>("host") << ":"
+    //    << a.get<int>("port") << std::endl;
 
     // wxh add console for print info!
 #if defined(CONSOLE_OUTPUT)
-    if (!AllocConsole()) {
-        printf_s("open console failed!\n");
+    if (enable_console)
+    {
+        if (!AllocConsole()) {
+            printf_s("open console failed!\n");
+        }
+        else {
+            char szBuff[128];
+            wsprintfA(szBuff, "debug output window, process ID: %d", GetCurrentProcessId());
+            SetConsoleTitleA(szBuff);
+            freopen("conin$", "r+t", stdin);
+            freopen("conout$", "w+t", stdout);
+            freopen("conout$", "w+t", stderr);
+        }
     }
-    else {
-        char szBuff[128];
-        wsprintfA(szBuff, "debug output window, process ID: %d", GetCurrentProcessId());
-        SetConsoleTitleA(szBuff);
-        freopen("conin$", "r+t", stdin);
-        freopen("conout$", "w+t", stdout);
-        freopen("conout$", "w+t", stderr);
-    }
+    
 #endif
+
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); /// 设置窗口的dpi感知，否则设置的大小不正确
 
     // 初始化全局字符串
