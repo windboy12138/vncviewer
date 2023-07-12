@@ -583,7 +583,7 @@ void KeyMap::ProcessKeyEvent(uint8_t virtKey, DWORD keyData)
     // exclude left and right winkey when not scroll-lock
     if (virtKey == 91 || virtKey == 92)
     {
-        return;
+        //return;
     }
 
     // key up event

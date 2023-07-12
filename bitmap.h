@@ -4,12 +4,27 @@
 #include <thread>
 #include "common_utils.h"
 #include "work_thread.h"
+#include "libyuv\scale_argb.h"
+#include "libyuv\planar_functions.h"
 extern HWND hWndChild;
 
 void InitMaskBitMap(int width, int height, bool top2bottom, int bit_count, BITMAPINFO* bmpinfo);
 void InitColorBitMap(int width, int height, bool top2bottom, int bit_count, BITMAPINFO& bmi);
 void PrintMaskBitmap(uint8_t* mask_bits);
 void PrintColorBitmap(uint8_t* color_bits);
+
+bool YUVBlend(uint8_t* dst_y,
+              uint8_t* dst_u,
+              uint8_t* dst_v,
+              int dst_width,
+              int dst_height,
+              int dst_xpos,
+              int dst_ypos,
+              const uint8_t* src_y,
+              const uint8_t* src_u,
+              const uint8_t* src_v,
+              int src_width,
+              int src_height);
 
 void InitBitMapInfoHeader(int width, int height, bool top2bottom, int bit_count, BITMAPINFOHEADER* bih)
 {
@@ -29,300 +44,11 @@ void InitBitMapInfo(int width, int height, bool top2bottom, int bit_count, BITMA
     memset(bmi->bmiColors, 0, sizeof(RGBQUAD));
 }
 
-HBITMAP IconToBitmap(HICON hIcon, SIZE* pTargetSize = NULL)
-{
-    ICONINFO info = { 0 };
-    if (hIcon == NULL
-        || !GetIconInfo(hIcon, &info)
-        //|| !info.fIcon)
-        )
-    {
-        return NULL;
-    }
-
-    INT nWidth = 0;
-    INT nHeight = 0;
-    if (pTargetSize != NULL)
-    {
-        nWidth = pTargetSize->cx;
-        nHeight = pTargetSize->cy;
-    }
-    else
-    {
-        if (info.hbmMask != NULL)
-        {
-            BITMAP bmp = { 0 };
-            GetObject(info.hbmMask, sizeof(bmp), &bmp);
-
-            nWidth = bmp.bmWidth;
-            nHeight = bmp.bmHeight;
-            printf_s("have mask, (w, h) (%d, %d)\n", nWidth, nHeight);
-        }
-    }
-
-    {
-        HDC wnd = GetWindowDC(hWndChild);
-
-        HDC bmp, maskbmp;
-        bmp = CreateCompatibleDC(NULL);
-        SelectObject(bmp, info.hbmColor);
-        
-        maskbmp = CreateCompatibleDC(NULL);
-        SelectObject(maskbmp, info.hbmMask);
-
-        uint8_t* lpvBits = NULL;
-        int nRet = 2;
-        BITMAP bm;
-        GetObject(info.hbmMask, sizeof(bm), &bm);
-        int ncolors = 1 << bm.bmBitsPixel;
-        int bmpinfo_size = sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * ncolors;
-        std::vector<uint8_t> buf(bmpinfo_size);
-        BITMAPINFO* bmpinfo = (BITMAPINFO*)buf.data();
-        bmpinfo->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-
-        nRet = ::GetDIBits(maskbmp, info.hbmMask, 0, 0, NULL, bmpinfo, DIB_RGB_COLORS);
-
-        lpvBits = new uint8_t[bmpinfo->bmiHeader.biSizeImage];
-
-        nRet = ::GetDIBits(maskbmp, info.hbmMask, 0, nHeight, lpvBits, bmpinfo, DIB_RGB_COLORS);
-
-        printf_s("bitmap mask datas \n");
-        for (int i = 0; i < bmpinfo->bmiHeader.biSizeImage; i++)
-        {
-            if (i % 4 == 0) {
-                printf_s("\n");
-            }
-            uint8_t tmp = lpvBits[i];
-            for (int j = 0; j < 8; j++)
-            {
-                bool res = tmp & 0x80;
-                tmp = tmp << 1;
-                printf_s("%d", res);
-            }
-        }
-        printf_s("\n");
-
-
-        BitBlt(wnd, 100, 100, 32, 32, maskbmp, 0, 0, SRCAND);
-        BitBlt(wnd, 100, 100, 32, 32, bmp, 0, 0, SRCINVERT);
-        // MaskBlt(wnd, 100, 100, 32, 32, bmp, 0, 0, info.hbmMask, 0, 0, 0xccaa0000);
-
-        DeleteDC(bmp);
-        DeleteDC(maskbmp);
-        ReleaseDC(hWndChild, wnd);
-    }
-
-    if (info.hbmColor != NULL)
-    {
-        DeleteObject(info.hbmColor);
-        info.hbmColor = NULL;
-    }
-
-    if (info.hbmMask != NULL)
-    {
-        DeleteObject(info.hbmMask);
-        info.hbmMask = NULL;
-    }
-
-    if (nWidth <= 0
-        || nHeight <= 0)
-    {
-        return NULL;
-    }
-
-    INT nPixelCount = nWidth * nHeight;
-
-    HDC dc = GetDC(NULL);
-    INT* pData = NULL;
-    HDC dcMem = NULL;
-    HBITMAP hBmpOld = NULL;
-    bool* pOpaque = NULL;
-    HBITMAP dib = NULL;
-    BOOL bSuccess = FALSE;
-
-    do
-    {
-        BITMAPINFOHEADER bi = { 0 };
-        bi.biSize = sizeof(BITMAPINFOHEADER);
-        bi.biWidth = nWidth;
-        bi.biHeight = -nHeight;
-        bi.biPlanes = 1;
-        bi.biBitCount = 32;
-        bi.biCompression = BI_RGB;
-        dib = CreateDIBSection(dc, (BITMAPINFO*)&bi, DIB_RGB_COLORS, (VOID**)&pData, NULL, 0);
-        if (dib == NULL) break;
-
-        memset(pData, 0, nPixelCount * 4);
-
-        dcMem = CreateCompatibleDC(dc);
-        if (dcMem == NULL) break;
-
-        hBmpOld = (HBITMAP)SelectObject(dcMem, dib);
-        ::DrawIconEx(dcMem, 0, 0, hIcon, nWidth, nHeight, 0, NULL, DI_MASK);
-
-        pOpaque = new(std::nothrow) bool[nPixelCount];
-        if (pOpaque == NULL) break;
-        for (INT i = 0; i < nPixelCount; ++i)
-        {
-            pOpaque[i] = !pData[i];
-        }
-
-        memset(pData, 0, nPixelCount * 4);
-        ::DrawIconEx(dcMem, 0, 0, hIcon, nWidth, nHeight, 0, NULL, DI_NORMAL);
-
-        BOOL bPixelHasAlpha = FALSE;
-        UINT* pPixel = (UINT*)pData;
-
-        for (INT i = 0; i < nPixelCount; ++i)
-        {
-            if (i % 32 == 0)
-            {
-                printf_s("\n");
-            }
-            printf_s("%8x ", pData[i]);
-        }
-
-        for (INT i = 0; i < nPixelCount; ++i, ++pPixel)
-        {
-            if ((*pPixel & 0xff000000) != 0)
-            {
-                bPixelHasAlpha = TRUE;
-                break;
-            }
-        }
-
-
-
-        if (!bPixelHasAlpha)
-        {
-            pPixel = (UINT*)pData;
-            for (INT i = 0; i < nPixelCount; ++i, ++pPixel)
-            {
-                if (pOpaque[i])
-                {
-                    *pPixel |= 0xFF000000;
-                }
-                else
-                {
-                    *pPixel &= 0x00FFFFFF;
-                }
-            }
-        }
-
-        bSuccess = TRUE;
-
-    } while (FALSE);
-
-
-    if (pOpaque != NULL)
-    {
-        delete[]pOpaque;
-        pOpaque = NULL;
-    }
-
-    if (dcMem != NULL)
-    {
-        SelectObject(dcMem, hBmpOld);
-        DeleteDC(dcMem);
-    }
-
-    ReleaseDC(NULL, dc);
-
-    if (!bSuccess)
-    {
-        if (dib != NULL)
-        {
-            DeleteObject(dib);
-            dib = NULL;
-        }
-    }
-
-    return dib;
-}
-
-void cursorToBitmap(CURSORINFO &ci)
-{
-    HDC hdc = GetDC(NULL);
-
-    HDC mem_dc = CreateCompatibleDC(hdc);
-
-    HBITMAP win_bitmap = CreateCompatibleBitmap(hdc, 32, 32);
-    // SelectObject(mem_dc, win_bitmap);
-    SetStretchBltMode(hdc, STRETCH_HALFTONE);
-
-    HICON hIcon = CopyIcon(ci.hCursor);
-    if (!hIcon)
-    {
-        return;
-    }
-
-    ICONINFO ii;
-    if (!GetIconInfo(hIcon, &ii))
-    {
-        DestroyIcon(hIcon);
-        return;
-    }
-
-    BITMAPINFO bmi = { 0 };
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);    
-    bmi.bmiHeader.biWidth = 32;
-    bmi.bmiHeader.biHeight = -32;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 1;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    bmi.bmiHeader.biSizeImage = 32 * 32 / 8;
-    memset(bmi.bmiColors, 0, 2 * sizeof(RGBQUAD));
-
-    uint8_t* image_data = nullptr;
-    image_data = new(std::nothrow) uint8_t[bmi.bmiHeader.biSizeImage];
-
-    if (image_data != nullptr)
-        memset(image_data, 0, bmi.bmiHeader.biSizeImage);
-
-    if (::GetDIBits(mem_dc, ii.hbmMask, 0, 32, image_data, &bmi, DIB_RGB_COLORS))
-    {
-        for (int i = 0; i < bmi.bmiHeader.biSizeImage; i++)
-        {
-            if (i % 4 == 0) {
-                printf_s("\n");
-            }
-            uint8_t tmp = image_data[i];
-            for (int j = 0; j < 8; j++)
-            {
-                bool res = tmp & 0x80;
-                tmp = tmp << 1;
-                printf_s("%d", res);
-            }
-        }
-        printf_s("\n");
-
-        //for (INT i = 0; i < bmi.bmiHeader.biSizeImage / 4; ++i)
-        //{
-        //    if (i % 32 == 0)
-        //    {
-        //        printf_s("\n");
-        //    }
-        //    printf_s("%8x ", image_data[i]);
-        //}
-
-        // to-do
-        //std::unique_ptr<DibImage> dib_image(new DibImage(&bmi, image_data));
-        //dib_image->Save(L"test.bmp");
-    }
-
-    DeleteObject(ii.hbmColor);
-    DeleteObject(ii.hbmMask);
-    DestroyIcon(hIcon);
-    ReleaseDC(NULL, hdc);
-    DeleteDC(mem_dc);
-    DeleteObject(win_bitmap);
-}
-
 int CaptureCursorBitmap(HCURSOR hCursor, uint8_t* &mask_bits, uint8_t* &color_bits)
 {
     HICON hIcon = CopyIcon(hCursor);
     ICONINFO info = { 0 };
-    bool success = true;
+    bool success = false;
     INT nWidth = 0;
     INT nHeight = 0;
 
@@ -331,21 +57,18 @@ int CaptureCursorBitmap(HCURSOR hCursor, uint8_t* &mask_bits, uint8_t* &color_bi
         if (!hIcon)
         {
             printf_s("copyIcon failed, error code:%d!\n", GetLastError());
-            success = false;
             break;
         }
 
         if (!GetIconInfo(hIcon, &info))
         {
             printf_s("GetIconInfo failed, error code:%d!\n", GetLastError());
-            success = false;
             break;
         }
 
         if (info.hbmMask == NULL)
         {
             printf_s("hbmMask is empty!\n");
-            success = false;
             break;
         }
 
@@ -406,7 +129,7 @@ int CaptureCursorBitmap(HCURSOR hCursor, uint8_t* &mask_bits, uint8_t* &color_bi
 
             } while (0);
 
-            PrintMaskBitmap(mask_bits);
+            // PrintMaskBitmap(mask_bits);
             printf_s("cursor handle:%d\n", hCursor);
             printf_s("generate mask is:%d\n", generate_mask);
 
@@ -453,7 +176,6 @@ int CaptureCursorBitmap(HCURSOR hCursor, uint8_t* &mask_bits, uint8_t* &color_bi
                 }
             } while (0);
 
-            Sleep(1000);
             DeleteDC(color_dc);
         }
         else if (nHeight == 64)
@@ -512,10 +234,24 @@ int CaptureCursorBitmap(HCURSOR hCursor, uint8_t* &mask_bits, uint8_t* &color_bi
             // not support format
             break;
         }
+        success = true;
     } while (0);
     
     if (success)
     {
+        uint8_t* dst_argb = new uint8_t[10 * 10 * 4];
+
+        int res = libyuv::ARGBScale(color_bits, 32 * 4, 32, 32,
+                                    dst_argb, 10 * 4, 10, 10,
+                                    libyuv::kFilterBox);
+
+        //uint8_t* ori_argb = new uint8_t[32 * 32 * 4];
+        //res = libyuv::ARGBScale(dst_argb, 26 * 4, 26, 26,
+        //                        ori_argb, 32 * 4, 32, 32,
+        //                        libyuv::kFilterBox);
+
+        // res = libyuv::ARGBBlend(color_bits, 32 * 4, dst_argb, 26 * 4, ori_argb, 32 * 4, 32, 32);
+
         HCURSOR h1 = NULL;
         HBITMAP mask_bmp;
         HBITMAP color_bmp;
@@ -537,6 +273,7 @@ int CaptureCursorBitmap(HCURSOR hCursor, uint8_t* &mask_bits, uint8_t* &color_bi
         {
             mask_bmp = CreateBitmap(nWidth, 32, 1, 1, mask_bits);
             color_bmp = CreateBitmap(nWidth, 32, 1, 32, color_bits);
+            // color_bmp = CreateBitmap(nWidth, 32, 1, 32, ori_argb);
             DeleteObject(info.hbmMask);
             DeleteObject(info.hbmColor);
             info.hbmMask = mask_bmp;
@@ -550,8 +287,8 @@ int CaptureCursorBitmap(HCURSOR hCursor, uint8_t* &mask_bits, uint8_t* &color_bi
         HDC mask_dc = CreateCompatibleDC(NULL);
         SelectObject(mask_dc, mask_bmp);
         BitBlt(wnd, 100, 100, 32, 32, NULL, 0, 0, WHITENESS);
-        /*BitBlt(wnd, 100, 100, 32, 32, mask_dc, 0, 0, SRCAND);
-        BitBlt(wnd, 100, 100, 32, 32, color_dc, 0, 0, SRCINVERT);*/
+        //BitBlt(wnd, 100, 100, 32, 32, mask_dc, 0, 0, SRCAND);
+        //BitBlt(wnd, 100, 100, 32, 32, color_dc, 0, 0, SRCINVERT);
         BLENDFUNCTION ftn = { 0 };
         ftn.BlendOp = AC_SRC_OVER;
         ftn.SourceConstantAlpha = 255;
@@ -567,6 +304,7 @@ int CaptureCursorBitmap(HCURSOR hCursor, uint8_t* &mask_bits, uint8_t* &color_bi
             SetClassLongPtr(hWndChild, GCLP_HCURSOR, (LONG_PTR)(h1));
             PostMessage(hWndChild, WM_SETCURSOR, (UINT)(hWndChild), 33554433);
             DestroyCursor(h1);
+            Sleep(1000);
         }
     }
 
@@ -613,7 +351,7 @@ void InitColorBitMap(int width, int height, bool top2bottom, int bit_count, BITM
 
 void PrintMaskBitmap(uint8_t *mask_bits)
 {
-    printf_s("bitmap mask datas \n");
+    printf_s("bitmap mask data\n");
     for (int i = 0; i < 32 * 32 / 8; i++)
     {
         if (i % 4 == 0) {
@@ -630,8 +368,32 @@ void PrintMaskBitmap(uint8_t *mask_bits)
     printf_s("\n");
 }
 
+void PrintColorThumbnail(uint8_t* color_bits)
+{
+    uint32_t* color = (uint32_t*)color_bits;
+    printf_s("\ncolor Thumbnail\n");
+    for (int i = 0; i < 32 * 32; i++)
+    {
+        if (i % 32 == 0)
+        {
+            printf_s("\n");
+        }
+        uint32_t value = *(color++);
+        if (value != 0)
+        {
+            printf_s("1");
+        }
+        else
+        {
+            printf_s("0");
+        }
+    }
+    printf_s("\n");
+}
+
 void PrintColorBitmap(uint8_t* color_bits)
 {
+    PrintColorThumbnail(color_bits);
     printf_s("\ncolor mask data\n");
     for (int i = 0; i < 32 * 32; i++)
     {
@@ -654,6 +416,48 @@ void PrintColorBitmap(uint8_t* color_bits)
         printf_s("\t");
     }
     printf_s("\n");
+}
+
+bool YUVBlend(uint8_t* dst_y,
+              uint8_t* dst_u,
+              uint8_t* dst_v,
+              int dst_width,
+              int dst_height,
+              int dst_xpos,
+              int dst_ypos,
+              const uint8_t* src_y,
+              const uint8_t* src_u,
+              const uint8_t* src_v,
+              int src_width,
+              int src_height)
+{
+    if (src_width > dst_width || src_height > dst_height)
+    {
+        return false;
+    }
+
+    int off_size = 0;
+    for (int i = 0; i < src_height; i++)
+    {
+        off_size = dst_width * (dst_ypos + i) + dst_xpos;
+        memcpy(dst_y + off_size, src_y + src_width * i, src_width);
+    }
+
+    int dst_uv_x_off = dst_xpos / 2;
+    int dst_uv_y_off = dst_ypos / 2;
+    int src_half_width = (src_width + 1) / 2;
+    int src_half_height = (src_height + 1) / 2;
+    int dst_half_width = (dst_width + 1) / 2;
+    int dst_half_height = (dst_height + 1) / 2;
+
+    for (int i = 0; i < src_half_height; i++)
+    {
+        off_size = dst_half_width * (dst_uv_y_off + i) + dst_uv_x_off;
+        memcpy(dst_u + off_size, src_u + src_half_width * i, src_half_width);
+        memcpy(dst_v + off_size, src_v + src_half_width * i, src_half_width);
+    }
+
+    return true;
 }
 
 

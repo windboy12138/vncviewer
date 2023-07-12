@@ -58,7 +58,8 @@ bool ClientControlCaptureImpl::InstallKeyBoardHook()
 	DWORD thread_id;
 	DWORD process_id;
 	thread_id = GetWindowThreadProcessId(cur_capture_wnd_, &process_id);
-	keyboard_hook_ = SetWindowsHookEx(WH_KEYBOARD, KeyBoardProc, NULL, thread_id);
+	// keyboard_hook_ = SetWindowsHookEx(WH_KEYBOARD, KeyBoardProc, NULL, thread_id);
+	keyboard_hook_ = SetWindowsHookEx(WH_KEYBOARD_LL, KeyBoardProc, NULL, NULL);
 
 	hIMC_ = ImmAssociateContext(cur_capture_wnd_, nullptr); // 窗口禁用输入法
 
@@ -272,7 +273,7 @@ LRESULT CALLBACK ClientControlCaptureImpl::KeyBoardProc(int nCode, WPARAM wParam
 	{
 		return CallNextHookEx(keyboard_hook_, nCode, wParam, lParam);
 	}
-
+	printf_s("key stroke, wParam:%d, lParam:%d,!\n", wParam, lParam);
 	control_capture_self_->ProcessKeyEventMsg((int)wParam, (DWORD)lParam);
 	return 1;
 }

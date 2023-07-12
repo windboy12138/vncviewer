@@ -17,6 +17,7 @@
 #include <wingdi.h>
 
 #pragma comment(lib, "Msimg32.lib") // gdi
+#pragma comment(lib, "libyuv_internal.lib")
 #define MAX_LOADSTRING 100
 
 
@@ -53,39 +54,7 @@ void ShowPointer();
 void ShowCursor();
 void CreateChildWindow();
 
-DWORD WINAPI capture_cursor(PVOID pvParam)
-{
-    printf_s("\ncapture cursor shape started! \n");
-    HCURSOR lastC = nullptr;
-    while (captureCursor) 
-    {
-        CURSORINFO ci = { 0 };
-        ci.cbSize = sizeof(CURSORINFO);
-        if (GetCursorInfo(&ci) && lastC != ci.hCursor)
-        {
-            lastC = ci.hCursor;
-            printf_s("cursor shape update, cursor:%p\n", lastC);
-            hcursorQ.push(lastC);
-        }
-    }
-    printf_s("\ncapture cursor shape stoped! \n");
-
-    
-    // 工作线程设置鼠标形状，并向ui窗口发消息
-    while (!hcursorQ.empty())
-    {
-        g_h1 = hcursorQ.front();
-        hcursorQ.pop();
-        int res = SetClassLongPtr(hWndChild, GCLP_HCURSOR, (LONG_PTR)(g_h1));
-        PostMessage(hWndChild, WM_SETCURSOR, (WPARAM)(hWndChild), 33554433);
-        printf_s("SetClassLongPtr res status:%d\n", res);
-        Sleep(1000);
-    }
-
-    return 0;
-}
-
-DWORD WINAPI capture_cursor_icon(PVOID pvParam)
+DWORD WINAPI CaptureCursorBitmap(PVOID pvParam)
 {
     Sleep(1000);
     printf_s("\ncapture cursor shape icon started! \n");
@@ -131,6 +100,12 @@ DWORD WINAPI capture_cursor_icon(PVOID pvParam)
         ci.cbSize = sizeof(CURSORINFO);
         GetCursorInfo(&ci);
 
+        printf_s("cursor pos: (%d, %d)\n", ci.ptScreenPos.x, ci.ptScreenPos.y);
+
+        POINT pt_new;
+        GetCursorPos(&pt_new);
+        printf_s("GetCursorPos: (%d, %d)\n", pt_new.x, pt_new.y);
+
         if (!(ci.flags & CURSOR_SHOWING))
         {
             printf_s("cursor not showed!\n");
@@ -174,33 +149,6 @@ DWORD WINAPI capture_cursor_icon(PVOID pvParam)
     return 0;
 }
 
-bool CaptureCursor(PVOID pvParam)
-{
-    CURSORINFO ci = { 0 };
-    ci.cbSize = sizeof(CURSORINFO);
-    GetCursorInfo(&ci);
-
-    if (!(ci.flags & CURSOR_SHOWING))
-    {
-        printf_s("cursor not showed!\n");
-        return false;
-    }
-
-    uint8_t* maskBits = NULL;
-    uint8_t* colorBits = NULL;
-    int res = CaptureCursorBitmap(ci.hCursor, maskBits, colorBits);
-
-    if (maskBits != NULL)
-    {
-        delete[] maskBits;
-    }
-
-    if (colorBits != NULL)
-    {
-        delete[] colorBits;
-    }
-}
-
 bool CreateCaptureCursorThread()
 {
     // 创建一个线程监控鼠标的形状变化，并把cursor handle存入队列中
@@ -208,18 +156,71 @@ bool CreateCaptureCursorThread()
     HANDLE th;
     th = NULL;
     int x = 0;
-    th = CreateThread(NULL, 0, capture_cursor_icon, (LPVOID)pcc, 0, &threadID);
+    th = CreateThread(NULL, 0, CaptureCursorBitmap, (LPVOID)pcc, 0, &threadID);
     CloseHandle(th);
     return true;
 }
 
-bool CreateWorkerThread()
+DWORD WINAPI DeviceListener(PVOID pvParam)
+{
+    WNDCLASSEXW window_class = { 0 };
+    window_class.cbSize = sizeof(window_class);
+    window_class.style = CS_HREDRAW | CS_VREDRAW;
+    window_class.lpfnWndProc = DeviceProc;
+    window_class.cbClsExtra = 0;
+    window_class.cbWndExtra = 0;
+    window_class.hInstance = hInst;
+    window_class.hIcon = NULL;
+    window_class.hCursor = NULL;
+    window_class.hbrBackground = NULL;
+    window_class.lpszMenuName = NULL;
+    window_class.lpszClassName = L"DeviceListener";
+    window_class.hIconSm = NULL;
+    auto res = RegisterClassExW(&window_class);
+
+    message_wnd_ = CreateWindowExW(
+        WS_EX_LAYERED, L"DeviceListener", L"DeviceListener",
+        WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        NULL, NULL, hInst, NULL);
+
+    if (!message_wnd_)
+    {
+        printf_s("error code:%d! \n", GetLastError());
+        return 0;
+    }
+
+    ShowWindow(message_wnd_, SW_HIDE);
+
+    hwnd_next_viewer = SetClipboardViewer(message_wnd_);
+    /*if (!AddClipboardFormatListener(message_wnd_))
+    {
+        printf_s("AddClipboardFormatListener failed! \n");
+        return 0;
+    }*/
+
+    // while (1) {}
+
+    MSG msg;
+    while (GetMessage(&msg, nullptr, 0, 0))
+    {
+        if (1)
+        {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+    }
+
+    return 0;
+}
+
+bool CreateDeviceListenerThread()
 {
     DWORD threadID;
     HANDLE th;
     th = NULL;
     int x = 0;
-    // th = CreateThread(NULL, 0, capture_cursor_icon, (LPVOID)pcc, 0, &threadID);
+    th = CreateThread(NULL, 0, DeviceListener, (LPVOID)pcc, 0, &threadID);
     CloseHandle(th);
     return true;
 }
@@ -229,7 +230,11 @@ LRESULT CALLBACK DeviceProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPara
     switch (message)
     {
     case WM_DISPLAYCHANGE:
-        printf_s("Device display changed! \n");
+        printf_s("Thread screen resolution changed! new size is (%4d, %4d), virtual screen size is (%4d, %4d)\n", LOWORD(lParam), HIWORD(lParam),
+                 GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        break;
+    case WM_DPICHANGED:
+        printf_s("Thread DPI changed, new=%d\n", HIWORD(wParam));
         break;
     case WM_CLIPBOARDUPDATE:
     {
@@ -269,71 +274,6 @@ LRESULT CALLBACK DeviceProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPara
     return 0;
 }
 
-DWORD WINAPI DeviceListener(PVOID pvParam)
-{
-    WNDCLASSEXW window_class = { 0 };
-    window_class.cbSize = sizeof(window_class);
-    window_class.style = CS_HREDRAW | CS_VREDRAW;
-    window_class.lpfnWndProc = DeviceProc;
-    window_class.cbClsExtra = 0;
-    window_class.cbWndExtra = 0;
-    window_class.hInstance = hInst;
-    window_class.hIcon = NULL;
-    window_class.hCursor = NULL;
-    window_class.hbrBackground = NULL;
-    window_class.lpszMenuName = NULL;
-    window_class.lpszClassName = L"DeviceListener";
-    window_class.hIconSm = NULL;
-    auto res = RegisterClassExW(&window_class);
-
-    message_wnd_ = CreateWindowExW(
-        WS_EX_LAYERED, L"DeviceListener", L"DeviceListener", 
-        WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_VISIBLE,
-        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-        NULL, NULL, hInst, NULL);
-
-    if (!message_wnd_)
-    {
-        printf_s("error code:%d! \n", GetLastError());
-        return 0;
-    }
-
-    ShowWindow(message_wnd_, SW_HIDE);
-
-    hwnd_next_viewer = SetClipboardViewer(message_wnd_);
-    /*if (!AddClipboardFormatListener(message_wnd_))
-    {
-        printf_s("AddClipboardFormatListener failed! \n");
-        return 0;
-    }*/
-
-    // while (1) {}
-
-    MSG msg;
-    while (GetMessage(&msg, nullptr, 0, 0))
-    {
-        if (1)
-        {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-    }
-
-    return 0;
-}
-
-bool CreateDeviceListenerThread()
-{
-    // 创建一个线程监控
-    DWORD threadID;
-    HANDLE th;
-    th = NULL;
-    int x = 0;
-    th = CreateThread(NULL, 0, DeviceListener, (LPVOID)pcc, 0, &threadID);
-    CloseHandle(th);
-    return true;
-}
-
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPWSTR    lpCmdLine,
@@ -344,6 +284,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 
     // wxh add console for print info!
+#if defined(CONSOLE_OUTPUT)
     if (!AllocConsole()) {
         printf_s("open console failed!\n");
     }
@@ -355,14 +296,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         freopen("conout$", "w+t", stdout);
         freopen("conout$", "w+t", stderr);
     }
+#endif
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); /// 设置窗口的dpi感知，否则设置的大小不正确
-    
+
     // 初始化全局字符串
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
     LoadStringW(hInstance, IDC_VNCVIEWER, szWindowClass, MAX_LOADSTRING);
     auto res = MyRegisterClass(hInstance);
     
-
     // 执行应用程序初始化:
     if (!InitInstance (hInstance, nCmdShow))
     {
@@ -370,9 +311,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }
 
     pcc = new ClientControlCaptureImpl();
-
-    // CreateDeviceListenerThread();
-    CreateCaptureCursorThread();
 
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_VNCVIEWER));
     
@@ -440,7 +378,6 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    ShowWindow(hWnd, nCmdShow);
    ShowWindow(hWndChild, nCmdShow);
    MoveWindow(hWndChild, 30, 100, 540, 960, true);
-   // SetWindowPos(hWndChild, NULL, 10, 10, 540, 1300, 0);
    UpdateWindow(hWnd);
 
    return TRUE;
@@ -469,7 +406,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDM_STARTCAPTURE:
                 // init hook
                 printf_s("\n######start all hooks! \n \n");
-                captureCursor = false;
                 pcc->SetCaptureWindow(hWnd);
                 if (pcc->InstallMouseHook())
                 {
@@ -482,12 +418,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 break;
             case IDM_STOPCAPTURE:
                 printf_s("\n######stop all hooks! \n \n");
-                captureCursor = false;
                 pcc->UnintsallMouseHook();
                 pcc->UninstallKeyBoardHook();
                 break;
             case IDM_STARTCURSOR:
                 CreateCaptureCursorThread();
+                break;
+            case ID_STOPCURSOR:
+                captureCursor = false;
                 break;
             case IDM_SHOWKEYBOARD:
                 ShowKeyboard();
@@ -517,6 +455,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_DISPLAYCHANGE:
         printf_s("screen resolution changed! new size is (%4d, %4d), virtual screen size is (%4d, %4d)\n", LOWORD(lParam), HIWORD(lParam),
                  GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        break;
+    case WM_DPICHANGED:
+        printf_s("DPI changed, new=%d\n", HIWORD(wParam));
+        break;
     default:
         return DefWindowProc(hWnd, message, wParam, lParam);
     }
@@ -648,7 +590,6 @@ void ShowCursor()
 void CreateChildWindow()
 {
     HCURSOR h1;
-    //h1 = CreateCursor(NULL, 0, 0, 32, 32, and_mask_bits, xor_mask_bits);
     h1 = LoadCursor(NULL, MAKEINTRESOURCE(IDC_ARROW));
     // h1 = LoadCursorFromFile(_T("cursor1.cur"));
 
@@ -656,7 +597,7 @@ void CreateChildWindow()
 
     wcex.style = CS_HREDRAW | CS_VREDRAW;
     wcex.lpfnWndProc = WndChildProc;
-    wcex.cbClsExtra = sizeof(long);;
+    wcex.cbClsExtra = sizeof(long);
     wcex.cbWndExtra = 0;
     wcex.hInstance = hInst;
     wcex.hIcon = NULL;
@@ -674,83 +615,3 @@ void CreateChildWindow()
         printf_s("create child Window failed, error code %d!\n", GetLastError());
     }
 }
-
-uint8_t mask_bits[] =
-{
-    0xff, 0xff, 0xff, 0xff, 0xfc, 0x01, 0xff, 0xff, 0xfc, 0x01, 0xff, 0xff, 0xfc, 0x01, 0xff, 0xff,
-    0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff,
-    0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff,
-    0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff, 0xff, 0x8f, 0xff, 0xff,
-    0xfc, 0x01, 0xff, 0xff, 0xfc, 0x01, 0xff, 0xff, 0xfc, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-};
-
-uint32_t color_bits[] =
-{
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0xffffffff, 0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x000000ff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0xffffffff, 0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x000000ff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0xffffffff, 0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-    0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,        0x0,
-};
